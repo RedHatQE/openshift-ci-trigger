@@ -19,7 +19,10 @@ urllib3.disable_warnings()
 app = Flask("webhook_server")
 
 LOCAL_REPO_PATH = "/tmp/openshift-ci-trigger"
-OPERATORS_DATA_FILE = "/tmp/openshift-ci-trigger/operators-latest-iib.json"
+OPERATORS_DATA_FILE_NAME = "operators-latest-iib.json"
+OPERATORS_DATA_FILE = os.path.join(
+    "/tmp/openshift-ci-trigger", OPERATORS_DATA_FILE_NAME
+)
 OPERATORS_AND_JOBS_MAPPING = {
     "rhods": {"v4.13": "periodic-ci-CSPI-QE-MSI-rhods-operator-v4.13-rhods-tests"}
 }
@@ -74,6 +77,9 @@ def get_new_iib(operator_config_data):
             ocp_version = iib_data["ocp_version"]
             iib_number = iib_data["index_image"].split("iib:")[-1]
 
+            if trigger_dict.get(operator_name, {}).get(ocp_version):
+                continue
+
             trigger_dict[operator_name][ocp_version] = False
             operator_data_from_file = data.get(operator_name)
             if operator_data_from_file:
@@ -103,11 +109,13 @@ def get_new_iib(operator_config_data):
 def push_changes(repo_url):
     app.logger.info(f"Check if {OPERATORS_DATA_FILE} was changed")
     git_repo = Repo(LOCAL_REPO_PATH)
-    if OPERATORS_DATA_FILE in git_repo.git.status():
+    if OPERATORS_DATA_FILE_NAME in git_repo.git.status():
+        app.logger.info(f"Found changes for {OPERATORS_DATA_FILE}, pushing new changes")
         git_repo.git.add(OPERATORS_DATA_FILE)
         git_repo.git.commit("-m", f"Auto update {OPERATORS_DATA_FILE}", "--no-verify")
         app.logger.info(f"Push new changes for {OPERATORS_DATA_FILE}")
         git_repo.git.push(repo_url)
+        app.logger.info(f"New changes for {OPERATORS_DATA_FILE_NAME} pushed")
 
     app.logger.info(f"Done check if {OPERATORS_DATA_FILE} was changed")
 
@@ -176,6 +184,7 @@ def run_in_process():
 def run_iib_update():
     while True:
         try:
+            app.logger.info("Check for new operators IIB")
             config_data = data_from_config()
             slack_webhook_url = config_data["slack_webhook_url"]
             token = config_data["github_token"]
@@ -187,14 +196,15 @@ def run_iib_update():
             for _operator, _version in trigger_dict.items():
                 for _ocp_version, _trigger in _version.items():
                     if _trigger:
-                        job = OPERATORS_AND_JOBS_MAPPING[_operator][_version]
+                        job = OPERATORS_AND_JOBS_MAPPING[_operator][_ocp_version]
                         trigger_openshift_ci_job(
                             job=job,
                             product=_operator,
                             slack_webhook_url=slack_webhook_url,
                         )
 
-            sleep(60 * 5)
+            sleep(60 * 60)
+            app.logger.info("Done check for new operators IIB, sleeping for 60 minutes")
         except Exception as ex:
             app.logger.error(f"Fail to run run_iib_update function. {ex}")
             continue
