@@ -106,13 +106,23 @@ def get_new_iib(operator_config_data):
     return trigger_dict
 
 
+def clone_repo(repo_url):
+    current_dir = os.getcwd()
+    shutil.rmtree(path=LOCAL_REPO_PATH, ignore_errors=True)
+    os.system(f"git clone {repo_url} {LOCAL_REPO_PATH}")
+    os.system(f"cd {LOCAL_REPO_PATH}")
+    os.system("pre-commit install")
+    os.system(f"cd {current_dir}")
+
+
 def push_changes(repo_url):
     app.logger.info(f"Check if {OPERATORS_DATA_FILE} was changed")
     git_repo = Repo(LOCAL_REPO_PATH)
     if OPERATORS_DATA_FILE_NAME in git_repo.git.status():
         app.logger.info(f"Found changes for {OPERATORS_DATA_FILE}, pushing new changes")
         git_repo.git.add(OPERATORS_DATA_FILE)
-        git_repo.git.commit("-m", f"Auto update {OPERATORS_DATA_FILE}", "--no-verify")
+        os.system(f"pre-commit run ---files {OPERATORS_DATA_FILE}")
+        git_repo.git.commit("-m", f"Auto update {OPERATORS_DATA_FILE}")
         app.logger.info(f"Push new changes for {OPERATORS_DATA_FILE}")
         git_repo.git.push(repo_url)
         app.logger.info(f"New changes for {OPERATORS_DATA_FILE_NAME} pushed")
@@ -189,8 +199,7 @@ def run_iib_update():
             slack_webhook_url = config_data["slack_webhook_url"]
             token = config_data["github_token"]
             repo_url = f"https://{token}@github.com/RedHatQE/openshift-ci-trigger.git"
-            shutil.rmtree(path=LOCAL_REPO_PATH, ignore_errors=True)
-            os.system(f"git clone {repo_url} {LOCAL_REPO_PATH}")
+            clone_repo(repo_url=repo_url)
             trigger_dict = get_new_iib(operator_config_data=config_data)
             push_changes(repo_url=repo_url)
             for _operator, _version in trigger_dict.items():
