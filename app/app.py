@@ -108,11 +108,13 @@ def get_new_iib(operator_config_data):
 
 def clone_repo(repo_url):
     current_dir = os.getcwd()
-    shutil.rmtree(path=LOCAL_REPO_PATH, ignore_errors=True)
-    os.system(f"git clone {repo_url} {LOCAL_REPO_PATH}")
-    os.system(f"cd {LOCAL_REPO_PATH}")
-    os.system("pre-commit install")
-    os.system(f"cd {current_dir}")
+    try:
+        shutil.rmtree(path=LOCAL_REPO_PATH, ignore_errors=True)
+        Repo.clone_from(url=repo_url, to_path=LOCAL_REPO_PATH)
+        os.chdir(LOCAL_REPO_PATH)
+        os.system("pre-commit install")
+    finally:
+        os.chdir(current_dir)
 
 
 def push_changes(repo_url):
