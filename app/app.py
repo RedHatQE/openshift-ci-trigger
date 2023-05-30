@@ -37,6 +37,7 @@ PRODUCTS_AND_JOBS_MAPPING = {
     "isv-managed-starburst-operator": "periodic-ci-CSPI-QE-MSI-rdbaas-operator-product-v4.12-poc-tests",
     "ocs-consumer": "periodic-ci-CSPI-QE-MSI-rdbaas-operator-product-v4.12-poc-tests",
     "connectors-operator": "periodic-ci-CSPI-QE-MSI-rdbaas-operator-product-v4.12-poc-tests",
+    "advanced-cluster-management": "periodic-ci-CSPI-QE-MSI-rdbaas-operator-product-v4.12-poc-tests",
 }
 
 
