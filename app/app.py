@@ -24,12 +24,6 @@ OPERATORS_DATA_FILE_NAME = "operators-latest-iib.json"
 OPERATORS_DATA_FILE = os.path.join(
     "/tmp/openshift-ci-trigger", OPERATORS_DATA_FILE_NAME
 )
-OPERATORS_AND_JOBS_MAPPING = {
-    "rhods": {
-        "v4.14": "periodic-ci-CSPI-QE-MSI-rhods-operator-v4.13-rhods-tests",
-        "v4.13": "periodic-ci-CSPI-QE-MSI-rhods-operator-v4.13-rhods-tests",
-    }
-}
 
 # TODO: Fill all addons and jobs mapping
 # TODO: Remove all but dbaas-operator once we have a successful trigger
@@ -49,6 +43,20 @@ class RepositoryNotFoundError(Exception):
     pass
 
 
+def extract_key_from_dict(key, _dict):
+    if isinstance(_dict, dict):
+        for _key, _val in _dict.items():
+            if _key == key:
+                yield _val
+            if isinstance(_val, dict):
+                for result in extract_key_from_dict(key, _val):
+                    yield result
+            elif isinstance(_val, list):
+                for _item in _val:
+                    for result in extract_key_from_dict(key, _item):
+                        yield result
+
+
 @contextmanager
 def change_directory(directory, logger):
     logger.info(f"Changing directory to {directory}")
@@ -66,66 +74,66 @@ def read_data_file():
             return {}
 
 
-def get_operator_data_from_url(datagrepper_config_data, operator_name):
+def get_operator_data_from_url(datagrepper_config_data, operator_name, ocp_version):
     app.logger.info(f"Getting IIB data for {operator_name}")
     res = requests.get(
-        f"{datagrepper_config_data['datagrepper_query_url']}{operator_name}",
+        f"{datagrepper_config_data['datagrepper_query_url']}&contains={operator_name}",
         verify=False,
     )
     app.logger.info(f"Done getting IIB data for {operator_name}")
     json_res = res.json()
     for raw_msg in json_res["raw_messages"]:
-        yield raw_msg["msg"]["index"]
+        _index = raw_msg["msg"]["index"]
+        if _index["ocp_version"] == ocp_version:
+            yield _index
 
 
 def get_new_iib(operator_config_data):
     new_trigger_data = False
-    data = read_data_file()
-    trigger_dict = {}
-    for operator_name in ["rhods"]:
-        trigger_dict[operator_name] = {}
-        app.logger.info(f"Parsing new IIB data for {operator_name}")
-        for iib_data in get_operator_data_from_url(
-            datagrepper_config_data=operator_config_data,
-            operator_name=operator_name,
-        ):
-            ocp_version = iib_data["ocp_version"]
-            index_image = iib_data["index_image"]
+    data_from_file = read_data_file()
+    openshift_ci_jobs = operator_config_data.get("openshift_ci_jobs")
 
-            if trigger_dict.get(operator_name, {}).get(ocp_version):
-                continue
-
-            trigger_dict[operator_name][ocp_version] = False
-            operator_data_from_file = data.get(operator_name)
-            if operator_data_from_file:
-                iib_by_ocp_version = operator_data_from_file.get(ocp_version)
-                if iib_by_ocp_version.get("iib"):
+    for _ocp_version, _job_data in openshift_ci_jobs.items():
+        openshift_ci_job_name = [*_job_data][0]
+        for _operator in _job_data[openshift_ci_job_name]:
+            data_from_file.setdefault(_ocp_version, {}).setdefault(
+                openshift_ci_job_name, {}
+            ).setdefault(_operator, {})
+            data_from_file[_ocp_version][openshift_ci_job_name][_operator][
+                "triggered"
+            ] = False
+            app.logger.info(f"Parsing new IIB data for {_operator}")
+            for iib_data in get_operator_data_from_url(
+                datagrepper_config_data=operator_config_data,
+                operator_name=_operator,
+                ocp_version=_ocp_version,
+            ):
+                index_image = iib_data["index_image"]
+                _operator_data = data_from_file[_ocp_version][openshift_ci_job_name][
+                    _operator
+                ]
+                iib_data_from_file = _operator_data.get("iib")
+                if iib_data_from_file:
                     iib_from_url = iib_data["index_image"].split("iib:")[-1]
-                    iib_from_file = iib_by_ocp_version["iib"].split("iib:")[-1]
+                    iib_from_file = iib_data_from_file.split("iib:")[-1]
                     if iib_from_file < iib_from_url:
+                        _operator_data["iib"] = index_image
+                        _operator_data["triggered"] = True
                         new_trigger_data = True
-                        iib_by_ocp_version["iib"] = index_image
-                        trigger_dict[operator_name][ocp_version] = True
-                    else:
-                        continue
+
                 else:
+                    _operator_data["iib"] = index_image
+                    _operator_data["triggered"] = True
                     new_trigger_data = True
-                    operator_data_from_file[ocp_version] = {"iib": index_image}
-                    trigger_dict[operator_name][ocp_version] = True
 
-            else:
-                new_trigger_data = True
-                data[operator_name] = {ocp_version: {"iib": index_image}}
-                trigger_dict[operator_name][ocp_version] = True
-
-        app.logger.info(f"Done parsing new IIB data for {operator_name}")
+        app.logger.info(f"Done parsing new IIB data for {_job_data}")
 
     if new_trigger_data:
-        app.logger.info(f"New IIB data found: {data}")
+        app.logger.info(f"New IIB data found: {data_from_file}")
         with open(OPERATORS_DATA_FILE, "w") as fd:
-            fd.write(json.dumps(data))
+            fd.write(json.dumps(data_from_file))
 
-    return trigger_dict
+    return data_from_file
 
 
 def clone_repo(repo_url):
@@ -250,21 +258,15 @@ def run_iib_update():
             clone_repo(repo_url=repo_url)
             trigger_dict = get_new_iib(operator_config_data=config_data)
             push_changes(repo_url=repo_url, slack_webhook_url=slack_errors_webhook_url)
-            for _operator, _version in trigger_dict.items():
-                for _ocp_version, _trigger in _version.items():
-                    if _trigger:
-                        job = OPERATORS_AND_JOBS_MAPPING[_operator].get(_ocp_version)
-                        if not job:
-                            app.logger.info(
-                                f"No job found for product: {_operator} and ocp version: {_ocp_version}"
-                            )
-                            continue
-                        trigger_openshift_ci_job(
-                            job=job,
-                            product=_operator,
-                            slack_webhook_url=slack_webhook_url,
-                            _type="operator",
-                        )
+            for _ocp_version, _job_data in trigger_dict.items():
+                if any(extract_key_from_dict("triggered", _job_data)):
+                    _job_name = [*_job_data][0]
+                    trigger_openshift_ci_job(
+                        job=_job_name,
+                        product=", ".join(_job_data[_job_name].keys()),
+                        slack_webhook_url=slack_webhook_url,
+                        _type="operator",
+                    )
 
         except Exception as ex:
             err_msg = f"Fail to run run_iib_update function. {ex}"
@@ -349,9 +351,10 @@ def process():
 
 
 def main():
-    run_in_process()
-    app.logger.info("Starting openshift-ci-trigger app")
-    app.run(port=5000, host="0.0.0.0", use_reloader=False)
+    run_iib_update()
+    # run_in_process()
+    # app.logger.info("Starting openshift-ci-trigger app")
+    # app.run(port=5000, host="0.0.0.0", use_reloader=False)
 
 
 if __name__ == "__main__":
