@@ -191,7 +191,9 @@ def send_slack_message(message, webhook_url):
         )
 
 
-def trigger_openshift_ci_job(job, product, slack_webhook_url, _type):
+def trigger_openshift_ci_job(
+    job, product, slack_webhook_url, _type, slack_errors_webhook_url
+):
     app.logger.info(f"Triggering openshift-ci job for {product} [{_type}]: {job}")
     config_data = data_from_config()
     trigger_url = config_data["trigger_url"]
@@ -202,15 +204,24 @@ def trigger_openshift_ci_job(job, product, slack_webhook_url, _type):
         data=data,
     )
     if not res.ok:
-        app.logger.error(
-            f"Failed to trigger openshift-ci job: {job} for addon {product}, response: {res.text}"
+        msg = (
+            f"Failed to trigger openshift-ci job: {job} for addon {product}, "
+            f"code: {res.status_code}, reason: {res.reason}"
+        )
+        app.logger.error(msg)
+        send_slack_message(
+            message=msg,
+            webhook_url=slack_errors_webhook_url,
         )
         return {}
 
     res_dict = json.loads(res.text)
     if res_dict["job_status"] != "TRIGGERED":
-        app.logger.error(
-            f"Failed to trigger openshift-ci job: {job} for addon {product}, response: {res_dict}"
+        msg = f"Failed to trigger openshift-ci job: {job} for addon {product}, response: {res_dict}"
+        app.logger.error(msg)
+        send_slack_message(
+            message=msg,
+            webhook_url=slack_errors_webhook_url,
         )
         return {}
 
@@ -266,6 +277,7 @@ def run_iib_update():
                         product=", ".join(_job_data[_job_name].keys()),
                         slack_webhook_url=slack_webhook_url,
                         _type="operator",
+                        slack_errors_webhook_url=slack_errors_webhook_url,
                     )
 
         except Exception as ex:
@@ -351,10 +363,9 @@ def process():
 
 
 def main():
-    run_iib_update()
-    # run_in_process()
-    # app.logger.info("Starting openshift-ci-trigger app")
-    # app.run(port=5000, host="0.0.0.0", use_reloader=False)
+    run_in_process()
+    app.logger.info("Starting openshift-ci-trigger app")
+    app.run(port=5000, host="0.0.0.0", use_reloader=False)
 
 
 if __name__ == "__main__":
