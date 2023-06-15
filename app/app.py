@@ -308,6 +308,8 @@ def get_api(url, token):
 
 
 def process_hook(api, data, slack_webhook_url):
+    config_data = data_from_config()
+    slack_errors_webhook_url = config_data["slack_errors_webhook_url"]
     object_attributes = data["object_attributes"]
     if object_attributes.get("action") == "merge":
         project = api.projects.get(data["project"]["id"])
@@ -331,6 +333,7 @@ def process_hook(api, data, slack_webhook_url):
                         product=addon,
                         slack_webhook_url=slack_webhook_url,
                         _type="addon",
+                        slack_errors_webhook_url=slack_errors_webhook_url,
                     )
                 else:
                     app.logger.info(
