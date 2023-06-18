@@ -91,27 +91,26 @@ def get_operator_data_from_url(datagrepper_config_data, operator_name, ocp_versi
 def get_new_iib(operator_config_data):
     new_trigger_data = False
     data_from_file = read_data_file()
-    openshift_ci_jobs = operator_config_data.get("openshift_ci_jobs")
+    openshift_ci_jobs = operator_config_data.get("openshift_ci_jobs", {})
 
     for _ocp_version, _job_data in openshift_ci_jobs.items():
         openshift_ci_job_name = [*_job_data][0]
-        for _operator in _job_data[openshift_ci_job_name]:
+        for _operator, _operator_name in _job_data[openshift_ci_job_name].items():
             data_from_file.setdefault(_ocp_version, {}).setdefault(
                 openshift_ci_job_name, {}
-            ).setdefault(_operator, {})
-            data_from_file[_ocp_version][openshift_ci_job_name][_operator][
-                "triggered"
-            ] = False
-            app.logger.info(f"Parsing new IIB data for {_operator}")
+            ).setdefault(_operator_name, {})
+            _operator_data = data_from_file[_ocp_version][openshift_ci_job_name][
+                _operator_name
+            ]
+            _operator_data["triggered"] = False
+            app.logger.info(f"Parsing new IIB data for {_operator_name}")
             for iib_data in get_operator_data_from_url(
                 datagrepper_config_data=operator_config_data,
                 operator_name=_operator,
                 ocp_version=_ocp_version,
             ):
                 index_image = iib_data["index_image"]
-                _operator_data = data_from_file[_ocp_version][openshift_ci_job_name][
-                    _operator
-                ]
+
                 iib_data_from_file = _operator_data.get("iib")
                 if iib_data_from_file:
                     iib_from_url = iib_data["index_image"].split("iib:")[-1]
@@ -367,7 +366,7 @@ def process():
 
 def main():
     run_in_process()
-    app.logger.info("Starting openshift-ci-trigger app")
+    app.logger.info(f"Starting {app.name} app")
     app.run(port=5000, host="0.0.0.0", use_reloader=False)
 
 
