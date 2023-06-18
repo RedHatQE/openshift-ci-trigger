@@ -43,6 +43,16 @@ class RepositoryNotFoundError(Exception):
     pass
 
 
+def operators_triggered_for_slack(job_dict):
+    res = ""
+    for vals in job_dict.values():
+        for operator, data in vals.items():
+            if data.get("triggered"):
+                res += f"{operator}: {data.get('iib')}\n\t"
+
+    return res
+
+
 def extract_key_from_dict(key, _dict):
     if isinstance(_dict, dict):
         for _key, _val in _dict.items():
@@ -191,11 +201,17 @@ def send_slack_message(message, webhook_url):
 
 
 def trigger_openshift_ci_job(
-    job, product, slack_webhook_url, _type, slack_errors_webhook_url
+    job,
+    product,
+    slack_webhook_url,
+    _type,
+    slack_errors_webhook_url,
+    trigger_dict=None,
 ):
     app.logger.info(f"Triggering openshift-ci job for {product} [{_type}]: {job}")
     config_data = data_from_config()
     trigger_url = config_data["trigger_url"]
+    job_dict = trigger_dict[[*trigger_dict][0]] if trigger_dict else None
     data = '{"job_execution_type": "1"}'
     res = requests.post(
         url=f"{trigger_url}/{job}",
@@ -235,6 +251,14 @@ Get the status of the job run:
 ```
 curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res_dict['id']}
 ```
+"""
+    if job_dict:
+        message += f"""
+Triggered using data:
+    ```
+    {operators_triggered_for_slack(job_dict=job_dict)}
+    ```
+
 """
     send_slack_message(
         message=message,
@@ -277,6 +301,7 @@ def run_iib_update():
                         slack_webhook_url=slack_webhook_url,
                         _type="operator",
                         slack_errors_webhook_url=slack_errors_webhook_url,
+                        trigger_dict=trigger_dict,
                     )
 
         except Exception as ex:
