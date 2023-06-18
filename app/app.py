@@ -133,7 +133,7 @@ def clone_repo(repo_url):
     Repo.clone_from(url=repo_url, to_path=LOCAL_REPO_PATH)
 
 
-def push_changes(repo_url):
+def push_changes(repo_url, slack_webhook_url):
     app.logger.info(f"Check if {OPERATORS_DATA_FILE} was changed")
     with change_directory(directory=LOCAL_REPO_PATH, logger=app.logger):
         try:
@@ -156,7 +156,9 @@ def push_changes(repo_url):
                 _git_repo.git.push(repo_url)
                 app.logger.info(f"New changes for {OPERATORS_DATA_FILE_NAME} pushed")
         except Exception as ex:
-            app.logger.error(f"Failed to update {OPERATORS_DATA_FILE_NAME}. {ex}")
+            err_msg = f"Failed to update {OPERATORS_DATA_FILE_NAME}. {ex}"
+            app.logger.error(err_msg)
+            send_slack_message(message=err_msg, webhook_url=slack_webhook_url)
 
     app.logger.info(f"Done check if {OPERATORS_DATA_FILE} was changed")
 
@@ -191,11 +193,18 @@ def trigger_openshift_ci_job(job, product, slack_webhook_url, _type):
         headers={"Authorization": f"Bearer {config_data['trigger_token']}"},
         data=data,
     )
+    if not res.ok:
+        app.logger.error(
+            f"Failed to trigger openshift-ci job: {job} for addon {product}, response: {res.text}"
+        )
+        return {}
+
     res_dict = json.loads(res.text)
-    if (not res.ok) or res_dict["job_status"] != "TRIGGERED":
+    if res_dict["job_status"] != "TRIGGERED":
         app.logger.error(
             f"Failed to trigger openshift-ci job: {job} for addon {product}, response: {res_dict}"
         )
+        return {}
 
     message = f"""
 ```
@@ -206,7 +215,7 @@ response:
 ```
 Get the status of the job run:
 ```
-curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res_dict.id}
+curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res_dict['id']}
 ```
 """
     send_slack_message(
@@ -229,16 +238,18 @@ def run_in_process():
 
 
 def run_iib_update():
+    slack_errors_webhook_url = None
     while True:
         try:
             app.logger.info("Check for new operators IIB")
             config_data = data_from_config()
             slack_webhook_url = config_data["slack_webhook_url"]
+            slack_errors_webhook_url = config_data["slack_errors_webhook_url"]
             token = config_data["github_token"]
             repo_url = f"https://{token}@github.com/RedHatQE/openshift-ci-trigger.git"
             clone_repo(repo_url=repo_url)
             trigger_dict = get_new_iib(operator_config_data=config_data)
-            push_changes(repo_url=repo_url)
+            push_changes(repo_url=repo_url, slack_webhook_url=slack_errors_webhook_url)
             for _operator, _version in trigger_dict.items():
                 for _ocp_version, _trigger in _version.items():
                     if _trigger:
@@ -256,7 +267,9 @@ def run_iib_update():
                         )
 
         except Exception as ex:
-            app.logger.error(f"Fail to run run_iib_update function. {ex}")
+            err_msg = f"Fail to run run_iib_update function. {ex}"
+            app.logger.error(err_msg)
+            send_slack_message(message=err_msg, webhook_url=slack_errors_webhook_url)
 
         finally:
             app.logger.info("Done check for new operators IIB, sleeping for 1 day")
@@ -313,7 +326,10 @@ def process_hook(api, data, slack_webhook_url):
 
 @app.route("/process", methods=["POST"])
 def process():
+    slack_errors_webhook_url = None
     try:
+        config_data = data_from_config()
+        slack_errors_webhook_url = config_data["slack_errors_webhook_url"]
         hook_data = request.json
         event_type = hook_data["event_type"]
         repository_name = hook_data["repository"]["name"]
@@ -326,7 +342,9 @@ def process():
         process_hook(api=api, data=hook_data, slack_webhook_url=slack_webhook_url)
         return "Process done"
     except Exception as ex:
-        app.logger.error(f"Failed to process hook: {ex}")
+        err_msg = f"Failed to process hook: {ex}"
+        app.logger.error(err_msg)
+        send_slack_message(message=err_msg, webhook_url=slack_errors_webhook_url)
         return "Process failed"
 
 
