@@ -311,7 +311,11 @@ def get_api(url, token):
 
 def process_hook(api, data, slack_webhook_url, repository_data):
     def _trigger_jobs(
-        _addon, _ocm_env, _slack_webhook_url, _slack_errors_webhook_url, _repository_data
+        _addon,
+        _ocm_env,
+        _slack_webhook_url,
+        _slack_errors_webhook_url,
+        _repository_data,
     ):
         _jobs = _repository_data["products_jobs_mapping"][_addon][_ocm_env]
         if not _jobs:
