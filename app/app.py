@@ -73,8 +73,9 @@ def get_new_iib(operator_config_data):
     new_trigger_data = False
     data_from_file = read_data_file()
     openshift_ci_jobs = operator_config_data.get("openshift_ci_jobs", {})
-
-    for _ocp_version, _jobs_data in openshift_ci_jobs.items():
+    for _ocp_version, _jobs_data in {
+        _ocp_version: _jobs_data for _ocp_version, _jobs_data in openshift_ci_jobs.items() if _jobs_data
+    }:
         for openshift_ci_job_name in [*_jobs_data]:
             job_data = openshift_ci_jobs[_ocp_version][openshift_ci_job_name]
             for _operator, _operator_name in job_data.items():
@@ -371,9 +372,10 @@ def process():
 
 
 def main():
-    run_in_process()
-    app.logger.info(f"Starting {app.name} app")
-    app.run(port=5000, host="0.0.0.0", use_reloader=False)
+    run_iib_update()
+    # run_in_process()
+    # app.logger.info(f"Starting {app.name} app")
+    # app.run(port=5000, host="0.0.0.0", use_reloader=False)
 
 
 if __name__ == "__main__":
