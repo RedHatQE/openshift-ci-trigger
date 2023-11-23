@@ -73,6 +73,7 @@ def get_new_iib(operator_config_data):
     new_trigger_data = False
     data_from_file = read_data_file()
     openshift_ci_jobs = operator_config_data.get("openshift_ci_jobs", {})
+
     for _ocp_version, _jobs_data in openshift_ci_jobs.items():
         if _jobs_data:
             for openshift_ci_job_name in [*_jobs_data]:
