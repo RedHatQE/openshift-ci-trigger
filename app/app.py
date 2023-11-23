@@ -373,9 +373,9 @@ def process():
 
 def main():
     run_iib_update()
-    # run_in_process()
-    # app.logger.info(f"Starting {app.name} app")
-    # app.run(port=5000, host="0.0.0.0", use_reloader=False)
+    run_in_process()
+    app.logger.info(f"Starting {app.name} app")
+    app.run(port=5000, host="0.0.0.0", use_reloader=False)
 
 
 if __name__ == "__main__":
