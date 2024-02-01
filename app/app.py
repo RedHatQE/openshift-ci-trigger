@@ -13,6 +13,7 @@ import urllib3
 import yaml
 from flask import Flask, request
 from git import Repo
+from api4jenkins import Jenkins
 
 
 urllib3.disable_warnings()
@@ -72,17 +73,19 @@ def get_operator_data_from_url(datagrepper_config_data, operator_name, ocp_versi
 def get_new_iib(operator_config_data):
     new_trigger_data = False
     data_from_file = read_data_file()
-    openshift_ci_jobs = operator_config_data.get("openshift_ci_jobs", {})
+    ci_jobs = operator_config_data.get("ci_jobs", {})
 
-    for _ocp_version, _jobs_data in openshift_ci_jobs.items():
+    for _ocp_version, _jobs_data in ci_jobs.items():
         if _jobs_data:
-            for openshift_ci_job_name in [*_jobs_data]:
-                job_data = openshift_ci_jobs[_ocp_version][openshift_ci_job_name]
-                for _operator, _operator_name in job_data.items():
-                    data_from_file.setdefault(_ocp_version, {}).setdefault(openshift_ci_job_name, {}).setdefault(
-                        _operator_name, {}
-                    )
-                    _operator_data = data_from_file[_ocp_version][openshift_ci_job_name][_operator_name]
+            for openshift_ci_job in [*_jobs_data["jobs"]]:
+                job_name = openshift_ci_job["name"]
+                job_products = openshift_ci_job["products"]
+                data_from_file.setdefault(_ocp_version, {}).setdefault(job_name, {})
+                data_from_file[_ocp_version][job_name]["operators"] = {}
+                data_from_file[_ocp_version][job_name]["ci"] = openshift_ci_job["ci"]
+                for _operator, _operator_name in job_products.items():
+                    data_from_file[_ocp_version][job_name]["operators"].setdefault(_operator_name, {})
+                    _operator_data = data_from_file[_ocp_version][job_name]["operators"][_operator_name]
                     _operator_data["triggered"] = False
                     app.logger.info(f"Parsing new IIB data for {_operator_name}")
                     for iib_data in get_operator_data_from_url(
@@ -165,33 +168,60 @@ def send_slack_message(message, webhook_url):
     )
     if response.status_code != 200:
         raise ValueError(
-            f"Request to slack returned an error {response.status_code} with the" f" following message: {response.text}"
+            f"Request to slack returned an error {response.status_code} with the following message: {response.text}"
         )
 
 
-def trigger_openshift_ci_job(
+def trigger_ci_job(
     job,
     product,
     slack_webhook_url,
     _type,
     slack_errors_webhook_url,
+    ci,
     trigger_dict=None,
 ):
     app.logger.info(f"Triggering openshift-ci job for {product} [{_type}]: {job}")
     config_data = data_from_config()
     trigger_url = config_data["trigger_url"]
     job_dict = trigger_dict[[*trigger_dict][0]] if trigger_dict else None
-    data = '{"job_execution_type": "1"}'
-    res = requests.post(
-        url=f"{trigger_url}/{job}",
-        headers={"Authorization": f"Bearer {config_data['trigger_token']}"},
-        data=data,
-    )
-    if not res.ok:
-        msg = (
-            f"Failed to trigger openshift-ci job: {job} for addon {product}, "
-            f"code: {res.status_code}, reason: {res.reason}"
+    openshift_ci = ci == "openshift-ci"
+    jenkins_ci = ci == "jenkins"
+    triggered_successfully = False
+    res_dict = {}
+    status_info_command = ""
+    data = ""
+
+    if openshift_ci:
+        data = '{"job_execution_type": "1"}'
+        res = requests.post(
+            url=f"{trigger_url}/{job}",
+            headers={"Authorization": f"Bearer {config_data['trigger_token']}"},
+            data=data,
         )
+        triggered_successfully = res.ok
+        res_dict = json.loads(res.text)
+
+    elif jenkins_ci:
+        api = Jenkins(
+            url="https://msi-qe-jenkins-csb-msi-qe.apps.ocp-c1.prod.psi.redhat.com",
+            auth=(config_data["jenkins_username"], config_data["jenkins_token"]),
+            verify=False,
+        )
+        job = api.get_job(full_name=job)
+        job_params = {}
+        for param in job.get_parameters():
+            job_params[param["defaultParameterValue"]["name"]] = param["defaultParameterValue"]["value"]
+
+        try:
+            res = job.build(parameters=job_params)
+            triggered_successfully = res.get_build()
+            res_dict = triggered_successfully.url
+        except Exception:
+            triggered_successfully = False
+
+    if not triggered_successfully:
+        msg = f"Failed to trigger {ci} job: {job} for addon {product}, "
         app.logger.error(msg)
         send_slack_message(
             message=msg,
@@ -199,9 +229,16 @@ def trigger_openshift_ci_job(
         )
         return {}
 
-    res_dict = json.loads(res.text)
+    if openshift_ci:
+        status_info_command = f"""
+curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res_dict['id']}
+"""
+
+    elif jenkins_ci:
+        status_info_command = "RUN JENKINS JOB URL"
+
     if res_dict["job_status"] != "TRIGGERED":
-        msg = f"Failed to trigger openshift-ci job: {job} for addon {product}, response:" f" {res_dict}"
+        msg = f"Failed to trigger {ci} job: {job} for addon {product}, response: {res_dict}"
         app.logger.error(msg)
         send_slack_message(
             message=msg,
@@ -211,14 +248,14 @@ def trigger_openshift_ci_job(
 
     message = f"""
 ```
-openshift-ci: New product {product} [{_type}] was merged/updated.
+{ci}: New product {product} [{_type}] was merged/updated.
 triggering job {job}
 response:
     {dict_to_str(_dict=res_dict)}
 ```
 ```
 Get the status of the job run:
-curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res_dict['id']}
+{status_info_command}
 ```
 """
     if job_dict:
@@ -260,17 +297,20 @@ def run_iib_update():
             repo_url = f"https://{token}@github.com/RedHatQE/openshift-ci-trigger.git"
             clone_repo(repo_url=repo_url)
             trigger_dict = get_new_iib(operator_config_data=config_data)
-            push_changes(repo_url=repo_url, slack_webhook_url=slack_errors_webhook_url)
+
+            # push_changes(repo_url=repo_url, slack_webhook_url=slack_errors_webhook_url)
             for _, _job_data in trigger_dict.items():
-                for _job_name, _operator_dict in _job_data.items():
-                    if any([_value["triggered"] for _value in _operator_dict.values()]):
-                        trigger_openshift_ci_job(
+                for _job_name, _job_dict in _job_data.items():
+                    operators = _job_dict["operators"]
+                    if any([_value["triggered"] for _value in operators.values()]):
+                        trigger_ci_job(
                             job=_job_name,
-                            product=", ".join(_operator_dict.keys()),
+                            product=", ".join(operators.keys()),
                             slack_webhook_url=slack_webhook_url,
                             _type="operator",
                             slack_errors_webhook_url=slack_errors_webhook_url,
                             trigger_dict=trigger_dict,
+                            ci=_job_dict["ci"],
                         )
 
         except Exception as ex:
@@ -312,7 +352,7 @@ def process_hook(api, data, slack_webhook_url, repository_data):
             return
 
         for _job in _jobs:
-            trigger_openshift_ci_job(
+            trigger_ci_job(
                 job=_job,
                 product=_addon,
                 slack_webhook_url=_slack_webhook_url,
@@ -326,7 +366,7 @@ def process_hook(api, data, slack_webhook_url, repository_data):
     if object_attributes.get("action") == "merge":
         project = api.projects.get(data["project"]["id"])
         merge_request = project.mergerequests.get(object_attributes["iid"])
-        app.logger.info(f"{project.name}: New merge request [{merge_request.iid}]" f" {merge_request.title}")
+        app.logger.info(f"{project.name}: New merge request [{merge_request.iid}] {merge_request.title}")
         for change in merge_request.changes().get("changes", []):
             changed_file = change.get("new_path")
             # TODO: Get product version from changed_file and send it to slack
