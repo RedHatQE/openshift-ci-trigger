@@ -4,6 +4,9 @@ github_token: <token>
 datagrepper_query_url: <datagrepper query url>
 slack_webhook_url: <slack webhook url to post job status>
 slack_errors_webhook_url: <slack webhook url to post code errors>
+jenkins_token: <token>
+jenkins_username: <username>
+jenkins_url: <url to jenkins>
 
 # FOr addons
 repositories:

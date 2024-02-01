@@ -204,7 +204,7 @@ def trigger_ci_job(
 
     elif jenkins_ci:
         api = Jenkins(
-            url="https://msi-qe-jenkins-csb-msi-qe.apps.ocp-c1.prod.psi.redhat.com",
+            url=config_data["jenkins_url"],
             auth=(config_data["jenkins_username"], config_data["jenkins_token"]),
             verify=False,
         )
