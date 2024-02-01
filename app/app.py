@@ -358,6 +358,7 @@ def process_hook(api, data, slack_webhook_url, repository_data):
                 slack_webhook_url=_slack_webhook_url,
                 _type="addon",
                 slack_errors_webhook_url=_slack_errors_webhook_url,
+                ci="openshift-ci",
             )
 
     config_data = data_from_config()
