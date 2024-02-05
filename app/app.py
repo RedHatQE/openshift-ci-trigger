@@ -32,7 +32,10 @@ class RepositoryNotFoundError(Exception):
 def operators_triggered_for_slack(job_dict):
     res = ""
     for vals in job_dict.values():
-        for operator, data in vals.items():
+        for operator, data in vals["operators"].items():
+            if not isinstance(data, dict):
+                continue
+
             if data.get("triggered"):
                 res += f"{operator}: {data.get('iib')}\n\t"
 
@@ -183,44 +186,22 @@ def trigger_ci_job(
 ):
     app.logger.info(f"Triggering openshift-ci job for {product} [{_type}]: {job}")
     config_data = data_from_config()
-    trigger_url = config_data["trigger_url"]
     job_dict = trigger_dict[[*trigger_dict][0]] if trigger_dict else None
     openshift_ci = ci == "openshift-ci"
     jenkins_ci = ci == "jenkins"
-    triggered_successfully = False
-    res_dict = {}
-    status_info_command = ""
-    data = ""
 
     if openshift_ci:
+        trigger_url = config_data["trigger_url"]
         data = '{"job_execution_type": "1"}'
-        res = requests.post(
-            url=f"{trigger_url}/{job}",
-            headers={"Authorization": f"Bearer {config_data['trigger_token']}"},
-            data=data,
-        )
-        triggered_successfully = res.ok
-        res_dict = json.loads(res.text)
+        rc, res = trigger_openshift_ci_job(job=job, data=data, config_data=config_data, trigger_url=trigger_url)
 
     elif jenkins_ci:
-        api = Jenkins(
-            url=config_data["jenkins_url"],
-            auth=(config_data["jenkins_username"], config_data["jenkins_token"]),
-            verify=False,
-        )
-        job = api.get_job(full_name=job)
-        job_params = {}
-        for param in job.get_parameters():
-            job_params[param["defaultParameterValue"]["name"]] = param["defaultParameterValue"]["value"]
+        rc, res = trigger_jenkins_job(job=job, config_data=config_data)
 
-        try:
-            res = job.build(parameters=job_params)
-            triggered_successfully = res.get_build()
-            res_dict = triggered_successfully.url
-        except Exception:
-            triggered_successfully = False
+    else:
+        raise ValueError(f"Unknown ci: {ci}")
 
-    if not triggered_successfully:
+    if not rc:
         msg = f"Failed to trigger {ci} job: {job} for addon {product}, "
         app.logger.error(msg)
         send_slack_message(
@@ -230,37 +211,30 @@ def trigger_ci_job(
         return {}
 
     if openshift_ci:
+        response = {dict_to_str(_dict=res)}
         status_info_command = f"""
-curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res_dict['id']}
+curl -X GET -d '{data}' -H "Authorization: Bearer $OPENSHIFT_CI_TOKEN" {trigger_url}/{res['id']}
 """
 
     elif jenkins_ci:
-        status_info_command = "RUN JENKINS JOB URL"
-
-    if res_dict["job_status"] != "TRIGGERED":
-        msg = f"Failed to trigger {ci} job: {job} for addon {product}, response: {res_dict}"
-        app.logger.error(msg)
-        send_slack_message(
-            message=msg,
-            webhook_url=slack_errors_webhook_url,
-        )
-        return {}
+        response = ""
+        status_info_command = res.url
 
     message = f"""
 ```
 {ci}: New product {product} [{_type}] was merged/updated.
 triggering job {job}
 response:
-    {dict_to_str(_dict=res_dict)}
-```
-```
+    {response}
+
+
 Get the status of the job run:
 {status_info_command}
-```
+
 """
     if job_dict:
         message += f"""
-```
+
 Triggered using data:
     {operators_triggered_for_slack(job_dict=job_dict)}
 ```
@@ -270,7 +244,34 @@ Triggered using data:
         message=message,
         webhook_url=slack_webhook_url,
     )
-    return res_dict
+    return res
+
+
+def trigger_openshift_ci_job(job, data, config_data, trigger_url):
+    res = requests.post(
+        url=f"{trigger_url}/{job}",
+        headers={"Authorization": f"Bearer {config_data['trigger_token']}"},
+        data=data,
+    )
+    return res.ok, json.loads(res.text)
+
+
+def trigger_jenkins_job(job, config_data):
+    api = Jenkins(
+        url=config_data["jenkins_url"],
+        auth=(config_data["jenkins_username"], config_data["jenkins_token"]),
+        verify=False,
+    )
+    job = api.get_job(full_name=job)
+    job_params = {}
+    for param in job.get_parameters():
+        job_params[param["defaultParameterValue"]["name"]] = param["defaultParameterValue"]["value"]
+
+    try:
+        res = job.build(parameters=job_params)
+        return res.get_build().exists(), res.get_build()
+    except Exception:
+        return False, None
 
 
 def dict_to_str(_dict):
@@ -298,7 +299,7 @@ def run_iib_update():
             clone_repo(repo_url=repo_url)
             trigger_dict = get_new_iib(operator_config_data=config_data)
 
-            # push_changes(repo_url=repo_url, slack_webhook_url=slack_errors_webhook_url)
+            push_changes(repo_url=repo_url, slack_webhook_url=slack_errors_webhook_url)
             for _, _job_data in trigger_dict.items():
                 for _job_name, _job_dict in _job_data.items():
                     operators = _job_dict["operators"]
